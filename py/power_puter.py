@@ -132,6 +132,14 @@ _BUILT_IN_FNS_LIST = [
   # Special
   Function(name="dir", call=dir, args=(1, 1)),
   Function(name="type", call=type, args=(1, 1)),
+  Function(name="getattr", call=getattr, args=(2, 3)),
+  Function(name="isinstance", call=isinstance, args=(2, 2)),
+  # Added getattr and isinstance to the built-in functions list.
+  # However, realized a potential pitfall: when passing types like int
+  # as arguments to isinstance, Name resolution currently returns an
+  # internal key string for built-ins, not the actual type object,
+  # which could break isinstance(type checks). Need to verify and
+  # possibly adapt arg evaluation to resolve built-in keys when used as values.
   Function(name="print", call=print, args=(0, None)),
   # Comfy Specials
   Function(name="node", call='_get_node', args=(0, 1)),
@@ -654,6 +662,7 @@ class _Puter:
       call = None
       args = []
       kwargs = {}
+      current_builtin_fn = None
       if isinstance(stmt.func, ast.Attribute):
         call = self._eval_statement(stmt.func, prev_stmt=stmt, ctx=ctx)
         if isinstance(call, tuple):
@@ -670,6 +679,7 @@ class _Puter:
 
       if isinstance(call, str) and call.startswith(_BUILTIN_FN_PREFIX):
         fn = _get_built_in_fn_by_key(call)
+        current_builtin_fn = fn
         call = fn.call
         if isinstance(call, str):
           call = getattr(self, call)
@@ -685,6 +695,21 @@ class _Puter:
         args.append(self._eval_statement(arg, ctx=ctx))
       for kwarg in stmt.keywords:
         kwargs[kwarg.arg] = self._eval_statement(kwarg.value, ctx=ctx)
+
+      # Special handling so isinstance receives actual type objects, not internal built-in keys.
+      if current_builtin_fn and current_builtin_fn.name == 'isinstance':
+        def resolve_built_in_key(val):
+          if isinstance(val, str) and val.startswith(_BUILTIN_FN_PREFIX):
+            return _get_built_in_fn_by_key(val).call
+          return val
+        # isinstance signature: (obj, class_or_tuple)
+        if len(args) >= 2:
+          class_or_tuple = args[1]
+          if isinstance(class_or_tuple, tuple):
+            args[1] = tuple(resolve_built_in_key(v) for v in class_or_tuple)
+          else:
+            args[1] = resolve_built_in_key(class_or_tuple)
+
       return call(*args, **kwargs)
 
     if isinstance(stmt, ast.Compare):
